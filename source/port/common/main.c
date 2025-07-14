@@ -15,6 +15,8 @@ int main(int argc, char *argv[])
 
     hal_init();
     app_init();
+
+    app_loop();
     
     app_deinit();
     hal_deinit();
