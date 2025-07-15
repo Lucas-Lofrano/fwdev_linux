@@ -1,5 +1,4 @@
 #pragma once
-#include "hal.h"
 
 void app_terminate_set(void);
 bool app_terminate_get(void);

@@ -142,7 +142,7 @@ Na abstração proposta, mais dois arquivos são importantes. O primeiro é o ar
 extern hal_cpu_driver_t HAL_CPU_DRIVER;
 ```
 
-O segundo arquivo é o [hal_cpu.c](https://github.com/marcelobarrosufu/fwdev/blob/f2b6c7ec997e6cf6f05c5cb11786ed2dff5d01f7/source/hal/hal_cpu.c). Esse arquivo é o ponto de entrada para as chamadas relacionadas à implementação do driver, usando a promessa feita. Ele pode ser usado também para implementar ações que são portáveis já, evitando levar esse conteúdo para um driver. O início do arquivo é o seguinte:
+O segundo arquivo é o [hal_cpu.c](https://github.com/marcelobarrosufu/fwdev/blob/f2b6c7ec997e6cf6f05c5cb11786ed2dff5d01f7/source/hal/hal_cpu.c). Esse arquivo é o ponto de entrada para as chamadas relacionadas à implementação do driver, usando a promessa feita. Ele pode ser usado também para implementar ações que já são portáveis (baseadas em outras interfaces da abstração), evitando levar esse conteúdo para o driver. O início do arquivo é o seguinte:
 
 ```C copy
 #include "hal.h"
@@ -182,7 +182,7 @@ uint32_t hal_cpu_random_seed_get(void)
 // ...
 ````
 
-Nesse arquivo é criado um ponteiro para a implementação do driver, usado nas funções disponibilizadas na estrutura `hal_cpu_driver_t`. Enquanto represente novamente um ponto onde se perde um pouco de desempenho, a abstração e portabilidade são favorecidas. Vale lembrar que, a depender do nível de otimização do compilador, essa perda pode ser quase nula.
+Nesse arquivo é criado um ponteiro para a implementação do driver. Esse ponteiro é para acesso às funções disponibilizadas na estrutura `hal_cpu_driver_t`. Enquanto represente novamente um ponto onde se perde um pouco de desempenho, a abstração e portabilidade são favorecidas. Vale lembrar que, a depender do nível de otimização do compilador, essa perda pode ser quase nula.
 
 O que falta agora é criar a implementação do driver da CPU, que será feita de forma diferente para cada porte. O trecho a seguir mostra como isso poderia ser feito para um microcontrolador STM32F4, por exemplo. A implementação não foi colocada completa aqui, mas você pode ver o exemplo completo no repositório do projeto, no arquivo [port_cpu.c](https://github.com/marcelobarrosufu/fwdev/blob/f2b6c7ec997e6cf6f05c5cb11786ed2dff5d01f7/source/port/stm32/port_cpu.c). Estamos também assumindo que o projeto foi criado pelo STM32CubeIDE usando os drivers de alto nível da ST (HAL).
 
@@ -230,25 +230,117 @@ hal_cpu_driver_t HAL_CPU_DRIVER =
 
 Ao final do arquivo, existe finalmente a realização do driver, na declaração `hal_cpu_driver_t HAL_CPU_DRIVER = ...`, onde os ponteiros de função da estrutura `hal_cpu_driver_t` são preenchidos com as funções implementadas. Um cuidado adicional é definir todas as funções como `static`, para que não sejam visíveis fora do arquivo, evitando possíveis conflitos de nomes com outras realizações dessa interface. Note que a inclusão do arquivo `main.h` da ST traz todas as definições necessárias para o funcionamento do driver, como a definição do `RNG_HandleTypeDef` e outras constantes, tornando esse arquivo totalmente dependente de plataforma, como esperado.
 
-Com isso, fica claro a forma básica de abstração de hardware que será usada daqui pra diante. No entanto, para alguns dispositivos que permitam múltiplas instâncias, como uma porta serial ou SPI, é necessário um pouco mais de trabalho, com o emprego da técnica de ponteiros opacos. Vamos ver como isso é feito a seguir. Ah, e se você ficou curioso com as funções relacionada a interrupção, recomendo ler a seção sobre [interrupções no Cortex M](./interrupts.md).
+Com isso, fica claro a forma básica de abstração de hardware que será usada daqui pra diante. No entanto, para alguns dispositivos que permitam múltiplas instâncias ou que possuem muitos detalhes de configuração relacionados ao sistema operacional em uso, como uma porta serial ou SPI, é necessário um pouco mais de trabalho. Em geral, uma alternativa é o emprego da técnica de ponteiros opacos. Vamos ver como isso é feito a seguir. Ah, e se você ficou curioso com as funções relacionada a interrupção, recomendo ler a seção sobre [interrupções no Cortex M](./interrupts.md).
 
 ### Ponteiros opacos
 
-Para discutir o conceito de ponteiro opaco, é interessante usar outro exemplo de abstração de hardware, dessa vez relacionado a uma porta serial. A ideia é criar uma interface que permita o uso de diversas portas seriais, sem depender de qualquer implementação específica. Um dos problemas está justamente relacionado a estruturas de dados de controle de uma porta serial, que podem variar bastante entre implementações. No Windows, por exemplo, o dispositivo serial é tratado como um arquivo arquivo via funções como CreateFile(), ReadFile() e WriteFile(), usadas através de um manipulador de arquivos (HANDLE). A configuração dos parâmetros da serial exige uma estrutura do tipo `DCB` (Device Control Block), que é bem diferente da estrutura usada no Linux, por exemplo. Todos esses dados precisar estar ocultos do usuário e não devem ser expostos na interface de uso da porta serial.
+Para discutir o conceito de ponteiro opaco, é interessante usar outro exemplo de abstração de hardware, dessa vez relacionado a uma porta serial. A ideia é criar uma interface que permita o uso de diversas portas seriais, sem depender de qualquer implementação específica. 
 
+Um dos problemas está justamente relacionado a estruturas de dados de controle de uma porta serial, que podem variar bastante entre implementações. No Windows, por exemplo, o dispositivo serial é tratado como um arquivo arquivo, sendo manipulado via funções como `CreateFile()`, `ReadFile()` e `WriteFile()`, normalmente requerendo um manipulador de arquivos (um `HANDLE`). A configuração dos parâmetros da serial exige uma estrutura do tipo `DCB` (Device Control Block), que é bem diferente da estrutura usada no Linux, por exemplo. Se deseja ter uma recepção assíncrona, é preciso criar tarefas de recepção separadas, buffer circulares, estruturas de controle e sincronização, tudo isso dependendo do sistema operacional em uso. Todos esses dados não devem ser expostos na interface de uso da porta serial.
 
+Uma proposta de interface pode ser vista no arquivo [hal_uart.h](https://github.com/marcelobarrosufu/fwdev/blob/f11249695efc98c3d7d9c3d1e036a02584159459/source/hal/hal_uart.h). Esse arquivo define uma interface genérica para a porta serial, com funções de configuração, leitura e escrita. Duas formas de operação são possíveis:
 
-Um outro ponto chama a atenção no arquivo de inclusão: a declaração do tipo de dados personalizado `hal_uart_dev_t`. Ele é declarado como um ponteiro para uma estrutura do tipo `struct *hal_uart_dev_s` mas note que não existe nenhuma definição do conteúdo da estrutura. Essa é uma técnica conhecida como ponteiro opaco, onde é possível declarar um ponteiro para uma estrutura sem se conhecer o conteúdo da mesma. Como será visto posteriormente, a estrutura `struct hal_uart_dev_s` será declarada apenas na realização da implementação da serial, no arquivo `hal_uart.c`. Com isso, nenhum detalhe é relevado sobre o dispositivo e a estrutura pode ser personalizada, a depender do porte desejado.
+- **polling**: o usuário chama as funções de leitura e escrita diretamente, sem uso de interrupções. Os dados recebidos devem ser armazenados pelo driver em um buffer, que pode ser lido pelo usuário quando desejado. Um problema aqui é que dados podem ser perdidos caso o buffer fiquei e o usuário não leia os dados recebidos a tempo. 
+- **interrupção**: o usuário pode configurar callbacks para recepção de dados, permitindo que o driver receba os dados de forma assíncrona, sem necessidade de polling, enviando os dados recebidos para o usuário através de uma função de callback. 
 
-Para dar vida a nossa implementação, vamos apresentar (só dessa vez!) quatro portes diferentes: Win32, Linux, MacOS e STM32L411 (BlackPill). Assim você vai poder ver claramente as diferenças na realização da implementação. 
+O fluxo de operação esperado para _polling_  é o seguinte:
 
-### Implementação para Win32
+- O usuário chama a função `hal_uart_init()` para inicializar o driver da porta serial.
+- O usuário chama a função `hal_uart_open()` para criar uma instância da porta serial. Essa função retorna um ponteiro opaco do tipo `hal_uart_dev_t`, que é um ponteiro para uma estrutura do tipo `struct hal_uart_dev_s`. Essa estrutura contém todos os dados necessários para o funcionamento da porta serial, mas não é exposta ao usuário. O usuário não precisa conhecer o conteúdo dessa estrutura, apenas o ponteiro opaco. A configuração é feita nesse momento, através de uma estrutura do tipo `hal_uart_config_t`. Essa estrutura contém os parâmetros de configuração da porta serial, como baud rate, paridade, bits de parada e controle de fluxo e a porta fica disponível pra uso. 
+- O usuário pode chamar as funções `hal_uart_read()` e `hal_uart_write()` para ler e escrever dados na porta serial, respectivamente. 
+- O usuário pode chamar a função `hal_uart_flush()` para limpar os buffers de recepção, a qualquer momento.
+- O usuário pode chamar a função `hal_uart_bytes_available()` para verificar quantos bytes estão disponíveis para leitura na porta serial.
+- Quando não pretender mais usar a porta serial, o usuário deve chamar a função `hal_uart_close()` para fechar a porta serial, liberando os recursos alocados pela porta.
+- Finalmente, o usuário pode chamar a função `hal_uart_deinit()` para liberar os recursos usados pelo driver da porta serial.
 
+Caso se decida usar interrupções, o fluxo de operação é um pouco diferente. No caso, ao abrir a porta serial, o usuário deve configurar uma função de callback para recepção de dados, permitindo que o driver receba os dados de forma assíncrona. 
 
-### Implementação para Linux
-
+Para dar vida a nossa implementação, vamos apresentar um porta para MacOS e STM32L411 (BlackPill). Assim você vai poder ver claramente as diferenças na realização da implementação. O arquivo `hal_uart.c` é o mesmo para ambas as plataformas, mas os arquivos de implementação do porte são diferentes. 
 
 ### Implementação para MacOS
+
+> [!NOTE]
+> :robot:
+
+Para MacOS, a implementa está disponível no arquivo [port_uart.c](https://github.com/marcelobarrosufu/fwdev/blob/95469beffa6000165b4c1c43d315b43aecafe8ec/source/port/mac/port_uart.c). Explicações geradas automaticamente a seguir.
+
+O arquivo `port_uart.c` implementa a camada de portabilidade para comunicação serial UART no sistema operacional macOS, fornecendo funcionalidades essenciais como abertura, fechamento, leitura e escrita de dados. A implementação utiliza a interface POSIX para acesso às portas seriais disponíveis no sistema operacional, fazendo uso de chamadas como `open()`, `close()`, `read()`, `write()`, além das funções `tcgetattr()` e `tcsetattr()` para configuração da porta serial. Além disso, utiliza um thread separado para receber dados continuamente de forma assíncrona, permitindo que o programa principal prossiga sem bloqueio.
+
+Ao abrir uma porta UART, o driver inicializa as configurações necessárias, definindo o baud rate, bits de dados, controle de fluxo RTS/CTS e desabilitando o processamento de caracteres especiais para garantir uma comunicação transparente e confiável. Uma vez aberta a porta, um thread dedicado à leitura é criado. Esse thread mantém-se em execução constante, realizando leituras de dados assim que eles estiverem disponíveis, e os dados recebidos são tratados por meio de um callback de interrupção ou armazenados em um buffer circular, dependendo da configuração.
+
+#### Abertura e Configuração da Porta Serial
+
+A função `port_uart_open()` é responsável por abrir e configurar a porta serial. Ela abre o dispositivo no modo não bloqueante e verifica possíveis erros ao realizar essa operação. Após aberta, a porta serial é configurada utilizando a estrutura `termios`:
+
+```c
+pdev->file = open((char*) pdev->name, O_RDWR | O_NOCTTY | O_NONBLOCK);
+```
+
+As configurações aplicadas envolvem ajustes no baud rate, controle de fluxo e definição do modo de comunicação raw, ou seja, sem interpretação especial dos caracteres enviados e recebidos:
+
+```c
+tcgetattr(pdev->file, &settings);
+cfsetospeed(&settings, baud);
+cfsetispeed(&settings, baud);
+settings.c_cflag |= (CLOCAL | CREAD);
+settings.c_cflag &= ~CSIZE;
+settings.c_cflag |= CS8;
+settings.c_cflag |= CRTSCTS;
+settings.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+settings.c_iflag &= ~(IXON | IXOFF | IXANY);
+tcsetattr(pdev->file, TCSANOW, &settings);
+```
+
+#### Thread para Recepção Assíncrona
+
+O driver utiliza um thread para recepção contínua dos dados enviados à porta serial. Essa técnica permite que o programa principal não bloqueie durante a espera por novos dados. O thread fica em execução constante, lendo byte a byte a informação que chega pela porta e armazenando num buffer circular ou tratando imediatamente conforme a configuração:
+
+```c
+pthread_create(&pdev->thread, NULL, &port_uart_rx_thread, (void*) pdev);
+```
+
+Dentro da thread, o método de leitura é realizado da seguinte forma:
+
+```c
+int n = read(pdev->file, &c, 1);
+if(n > 0)
+{
+    if(pdev->cfg.interrupt_callback)
+        pdev->cfg.interrupt_callback(c);
+    else
+        utl_cbf_put(pdev->cb, c);
+}
+```
+
+#### Escrita na Porta Serial
+
+Para a escrita de dados na porta UART, o driver fornece a função `port_uart_write()`. Esta função realiza a operação de escrita usando diretamente a chamada de sistema `write()`:
+
+```c
+int n = write(pdev->file, buffer, size);
+```
+
+Caso a escrita seja bem-sucedida, a quantidade de bytes escritos é retornada, permitindo ao usuário validar se todos os dados foram corretamente transmitidos.
+
+#### Encerramento e Limpeza
+
+A função `port_uart_close()` é utilizada para fechar a porta serial e garantir que todos os recursos alocados sejam devidamente liberados. Ela encerra a thread de recepção, fecha o descritor do arquivo da porta serial e invalida o ponteiro de referência ao dispositivo UART:
+
+```c
+pdev->in_use = false;
+pthread_join(pdev->thread, NULL);
+close(pdev->file);
+pdev->file = -1;
+```
+### Considerações Finais
+
+A implementação do driver `port_uart.c` para macOS é uma solução eficaz e organizada para comunicação serial em ambientes Unix-like, oferecendo recursos suficientes para aplicações diversas que demandem interação confiável e responsiva com dispositivos UART. As sugestões apontadas visam aumentar ainda mais a robustez, segurança e eficiência da comunicação.
+
+
+
+
+<!-- 
+
 
 ### Implementação para STM32L411
 
